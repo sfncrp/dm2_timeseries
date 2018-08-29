@@ -1,0 +1,611 @@
+\documentclass[a4paper,11pt,final]{article}
+\usepackage{fancyvrb, color, graphicx, hyperref, amsmath, url}
+\usepackage[a4paper,width=180mm,top=20mm,bottom=20mm,bindingoffset=6mm]{geometry}
+
+%%\usepackage{palatino}
+
+%%\usepackage[T1]{fontenc}
+%%\usepackage[utf8]{inputenc}
+\usepackage{fontspec}
+\usepackage{booktabs}
+%%\usepackage[a4paper,text={16.5cm,25.2cm},centering]{geometry}
+\usepackage{hyperref}        
+\usepackage{helvet}
+\hypersetup  
+{   pdfauthor = {Stefano Carpita},
+  pdftitle={},
+  colorlinks=TRUE,
+  linkcolor=black,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1.2ex}
+
+\title{Time series analysis: IBM stocks}
+\author{Stefano Carpita \\ \url{https://github.com/sfncrp}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Objectives}
+
+Time series: given the 50+ years long history of stock values of a company, split it into years, and study their similarities, also using clustering. Objectives: compare similarities, compute clustering. Dataset: IBM stocks (source: Yahoo Finance), includes a Python snippet to read and split the data. Dataset obtained from Yahoo!Finance service.
+Sequential patterns: discover patterns over the stock value time series above. Before that, preprocess the data by splitting it into monthly time series and discretizing them in some way. Objective: find Motifs-like patterns (i.e. frequent contiguous subsequences) of length at least 4 days. Dataset: same as the point before.
+
+\section{Introduction}
+
+The dataset, obtained from \href{https://finance.yahoo.com/quote/IBM/history?period1=-252378000&period2=1523656800&interval=1d&filter=history&frequency=1d&guccounter=1}{Yahoo Finance} REF, includes the time history of IBM stock prices from 1962 to MESE 2018 with daily frequency.
+For each day the dataset contains the opening, minimum, maximum, close and adjusted prices.
+The close price is adjusted considering historical stock splits, while the adjusted values considers both splits and dividends payments.
+The adjustements are done 'back in time' in order to compare the current values with the past ones.
+
+<<packages, echo = False, results = 'hidden'>>=
+###########################################################
+# importing packages and dataset
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def mm2inch(x):
+    return(x/25.4)
+
+FIG_HEIGHT = mm2inch(67)
+
+FIG_WIDTH_FULL = round(4/3*FIG_HEIGHT*2 *25.4,1)
+FIG_WIDTH_ONE = round(4/3*FIG_HEIGHT*25.4,1)
+
+FIGSIZE_ONECOL = (mm2inch(190/2), 3/4*mm2inch(190/2))
+FIGSIZE_TWOCOL = (2*FIGSIZE_ONECOL[0], FIGSIZE_ONECOL[1])
+
+SMALL_SIZE = 10
+MEDIUM_SIZE = 11
+BIGGER_SIZE = 12
+
+plt.rcParams['interactive'] = True
+# plt.rcParams['interactive']
+
+plt.rc('font', size=SMALL_SIZE)          # controls default text sizes
+plt.rc('xtick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
+plt.rc('ytick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
+plt.rc('legend', fontsize=SMALL_SIZE)    # legend fontsize
+plt.rc('axes', labelsize=MEDIUM_SIZE)    # fontsize of the x and y label
+plt.rc('axes', titlesize=BIGGER_SIZE)     # fontsize of the axes title
+plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
+import seaborn as sns
+
+df = pd.read_csv('ibm_daily_1962-2018.csv', sep='\t',header=0, 
+                 index_col = 0)
+df.index = pd.to_datetime(df.index)
+
+@ 
+
+\begin{table}[htbp]
+  \centering
+<<table-dataset, echo = False, results = 'tex'>>=
+
+def f1(x):
+    return( '{:.2f}'.format(x))
+
+fs = [f1 for i in range(df.shape[1])]
+
+
+df_head = df[:5]
+df_head = df_head.append(df[-5:])
+
+print(df_head.to_latex(formatters = fs ))
+del(fs,f1)
+
+@ 
+\caption{Dataset head and tail.}
+\end{table}
+
+The Open, Close and Adj stock prices time history are represented in Fig. \ref{fig:timeseries}, by using a moving average with a 30 day window.
+Open and Close prices closely overlaps, while the Adj value has a similar trend but lower values. The linear correlations between all the stock prices time series have values higher than 0.99.
+In Fig. \ref{fig:volumes} the smoothed Volume time history is shown. 
+The prices and volumes time series are very different, with a low Pearson correlation, between 0.2-0.3.
+
+<<timeseries, echo = False, caption='IBM stock prices time series, values are smoothed using 30 days moving mean.', results = 'hidden'>>=
+
+from matplotlib import dates
+
+df_corr = df.corr()
+df_corr.apply(round, ndigits = 3 )
+
+loc_y = dates.YearLocator(5)
+loc_y2 = dates.YearLocator(1)
+
+df_smoothed = df.rolling(30).mean()
+
+plt.close()
+fig, ax = plt.subplots(1,1,figsize=FIGSIZE_TWOCOL)
+ax.plot(df_smoothed["Adj"], label = "Adj")
+ax.plot(df_smoothed["Close"], label = "Close")
+ax.plot(df_smoothed["Open"], label = "Open")
+ax.xaxis.set_major_locator(loc_y)
+ax.xaxis.set_minor_locator(loc_y2)
+ax.grid()
+ax.legend()
+ax.set_ylabel("Stock prices (USD) \n (30 days moving mean)")
+plt.tight_layout()
+
+@ 
+
+<<volumes, echo = False, caption='IBM volumes time history, smoothed using 30 days moving mean.', results = 'hidden', fig_pos = 'ht'>>=
+
+vols = df['Volume'].rolling(30).mean()
+
+plt.close()
+fig, ax = plt.subplots(1,1,figsize=FIGSIZE_TWOCOL)
+ax.plot(vols, label = "Volume")
+ax.xaxis.set_major_locator(loc_y)
+ax.xaxis.set_minor_locator(loc_y2)
+ax.grid()
+ax.legend()
+ax.set_ylabel("Stock volumes\n ( 30 days moving mean)")
+plt.tight_layout()
+
+del(df_smoothed)
+
+@ 
+
+\section{Year similarities}
+
+The objective of this section is to analyze the similarities between yearly time histories of the stock prices, identifying groups of similar annual trends.
+The variable used for the similarity comparison is the adjusted value Adj. The overall Adj time history has been splitted in annual time series.
+The time series have been standardized obtaining annual distributions with equal zero mean and standard deviation normalized to unity. 
+In order to investigate the similarity between any two annual series the Dynamic Time Warping distance has been computed. 
+The DTW distance is a symmetric dissimilarity measure and not a proper mathematical distance, because generally not satisfying the triangle inequality and the positive definiteness property.
+The DTW methodology permits to consider misalignment between the time series in the distance computation, which is not possible using the standard Euclidean distance. This method has an high computational cost, quadratic in the time series lengths.
+In the analysis, to reduce the computational cost a Sakoe-Chiba global constraint has been used, with a band width of 80 days, corresponding about to a year quarter.
+In Fig. \ref{fig:dtw_example} an example of DTW distance computation between the 2007 and 2008 time series is shown. The Adj time series are standardized and the optimal path is computed using the a Sakoe-Chiba band.
+
+
+<<dtw_example, echo = False, results = 'hidden', width = '\\textwidth', caption=' 2007-2008 time series and DTW optimal path, using Sakoe-Chiba band.'>>=
+###########################################################
+## dtw example
+
+from sklearn import preprocessing
+from sklearn.metrics.pairwise import pairwise_distances
+import time
+
+# importing 'mydtw' using path to avoid pweave bug
+import importlib.util
+spec = importlib.util.spec_from_file_location("mydtw", "./mydtw.py")
+dtw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dtw)
+
+# grouping and standardization
+groups = df.groupby(df.index.year)
+groups_dict = {name:group for name, group in groups}
+
+groups_norm = { name:pd.DataFrame(preprocessing.scale(group), index = group.index, columns = group.columns) for name,group in groups}
+
+group1 = groups_norm[2007]
+group2 = groups_norm[2008]
+
+ys1 = group1['Adj']
+ys2 = group2['Adj']
+
+def dist(x,y):
+    return abs(x-y)
+
+#help(dtw.dtw)
+
+d, aa, cc, path = dtw.dtw(ys1, ys2, dist = dist, constraint = "SC", band = 100)
+
+plt.close()
+
+fig,ax = plt.subplots(1,2, figsize= FIGSIZE_TWOCOL)
+
+ax[0].plot(range((groups_dict[2007]).shape[0]), groups_norm[2007]['Adj'], label = '2007')
+
+ax[0].plot(range((groups_dict[2008]).shape[0]), groups_norm[2008]['Adj'], label = '2008')
+ax[0].set_ylabel('Standardized Adj')
+ax[0].set_xlabel('Days')
+ax[0].legend()
+ax[0].set_title('Time series')
+
+dtw.matrix_and_best_path(cc, path)
+ax[1].set_xlabel('2007')
+ax[1].set_ylabel('2008')
+
+plt.tight_layout()
+
+@ 
+
+<<dtw_computation, echo = False, results = 'hidden'>>=
+
+###########################################################
+## dtw computation
+
+def dtw_group(year1, year2, band = 300, variable = "Adj", results = 'd'):
+    """ Wrapper function for dtw computation """
+    if(year1[0]==year2[0]):
+        """ pairwise_distances computes also the diagonal..."""
+        return 0
+    
+    series1 = groups_norm[year1[0]][variable]
+    series2 = groups_norm[year2[0]][variable]
+    try:
+        out = dtw.dtw(series1, series2, dist = dist, 
+                      constraint = "SC", band = band)
+    except IndexError:
+        print("Handling exception: using no constraints")
+        out = dtw.dtw(series1, series2, dist = dist, constraint = None)
+        
+    print("{} {} {} {} {}".format(variable, band, year1[0], year2[0],out[0]))
+    if(results == "d"):
+        return out[0]
+    else:
+        return out
+    
+dtw_group([2001],[2018], band = 100)    
+    
+
+def which(l, key):
+    return [i for i,x in enumerate(l) if x ==key ]
+
+
+years = list((groups_norm.keys()))
+years = years[:]
+Xyears = np.array(years)
+Xyears = np.reshape(Xyears, (-1,1))
+Xyears
+
+which(years, 2000)
+which(years, 2010)
+
+
+""" 
+PLEASE ATTENTION! 
+executing computation is time consuming:
+about ~25 minutes on a i5 CPU laptop.
+
+- use 'load=1' to load distances matrix from file. 
+- use 'load=0' to execute computation
+"""
+
+load = 1
+if(load):
+    print(" loading distances dataframe from file ")
+    dd = pd.read_pickle("data/dtw_dd.pkl")    
+    ## handling file not found exception
+        
+elif(load == 0):
+    print(" Executing computation ")
+    start = time.time()
+    out = pairwise_distances(X=Xyears, metric = dtw_group,
+                             band = 80)
+    end = time.time()
+    print("Execution time:"+ str((end-start)/60))
+    dd = pd.DataFrame(out, index = years, columns = years)
+    dd.to_pickle("data/dtw_dd.pkl")
+    dd.to_csv("data/dtw_dd.csv")
+else:
+    print("Error: to load, or not to load? That is the question!")
+
+dd.head()
+
+@ 
+
+<<distancesanalysis, echo= False, results = 'hidden'>>=
+###########################################################
+
+plt.close()
+ddp = dd.apply(np.asarray, dtype = "int")
+sns.heatmap(ddp, annot=False, fmt = "d")
+dda=dd.sort_values(1997)
+plt.close()
+sns.heatmap(dda, annot=False, fmt = "d")
+plt.close()
+dd.head()
+
+dd.apply(np.median)
+
+dd.values.flatten()
+
+@ 
+
+In order to identify groups of similar years, the DTW distance matrix has been computed and the DBSCAN clustering methodology applied. 
+The DBSCAN algorithm has been executed multiple times, varying the radius of the neighbourhood \textit{Eps} and maintaining the minimum number of points \textit{MinPts} equal to 3. In Fig. \ref{fig:dbscan_clustering} the distances distribution is represented on the left, on the right the number of clusters as a function of the Eps value is shown. The orange curve represents the percentage of years identified as noise, normalized considering 100\% equal to the maximum number of clusters obtained. 
+
+
+<<dbscan_clustering, echo = False, results = 'hidden', caption = 'Distances distribution and DBSCAN number of clusters vs Eps value. Percentage of noise is represented with the orange curve,   normalized considering 100\\% at the maximum number of clusters obtained.'>>=
+###########################################################
+## DBSCAN clustering
+from sklearn.cluster import DBSCAN
+
+dd_flat = dd.values.flatten()
+
+plt.close()
+fig, ax = plt.subplots(1,2,figsize = FIGSIZE_TWOCOL)
+
+plt.sca(ax[0])
+
+pd.Series(dd_flat).plot(kind='kde')
+plt.xticks(np.arange(-500,1000,100), rotation = 60)
+plt.title("Distances distribution")
+plt.grid()
+
+
+eps_list = np.linspace(1,100,1000)
+
+
+dbs = []
+n_clusters_list = []
+noise_list = []
+labels_matrix = np.array([])
+
+for i,eps in enumerate(eps_list):
+    db = ( DBSCAN(eps=eps, min_samples=3, metric='precomputed').fit(dd))
+    #print("{}:{}".format(int(eps) , db.labels_))
+    n_clusters = len(set(db.labels_)) - (1 if -1 in db.labels_ else 0)
+    if(i==0):
+        labels_matrix = np.hstack( [labels_matrix, db.labels_])
+    else:    
+        labels_matrix = np.column_stack( [labels_matrix, db.labels_])
+    #print(labels_matrix)
+    noise_list.append( sum([ 1 if i==-1 else 0 for i in db.labels_]))
+    n_clusters_list.append(n_clusters)
+    dbs.append(db)
+    
+
+
+plt.sca(ax[1])
+plt.plot(eps_list, n_clusters_list, label = 'N clusters')
+plt.plot(eps_list, np.array(noise_list)/len(years)*max(n_clusters_list), label = 'Noise')
+plt.grid()
+plt.xticks(np.arange(0,100,10))
+plt.legend()
+
+plt.title("DBSCAN clusters")
+plt.ylabel("N clusters")
+plt.xlabel("Eps value")
+
+eps_index_up = [i for i,eps in enumerate(eps_list) if(eps>55 and eps<56)]
+eps_index_up = eps_index_up[-1]
+eps_index_up
+eps_index_low = 455
+
+plt.axvline(x = eps_list[eps_index_up], linestyle = ':')
+plt.axvline(x = eps_list[eps_index_low], linestyle = ':')
+
+@ 
+
+<<DBSCAN_labels, echo = False, results = "hidden", caption = 'DBSCAN labels'>>=
+###########################################################
+## DBSCAN label plot
+
+df_labels = pd.DataFrame(labels_matrix, index = years)
+df_labels["Index"] = df_labels.index
+
+df_labels.sort_values([eps_index_up, eps_index_low, 'Index'], inplace = True)                 
+df_labels.drop('Index', axis = 1, inplace = True)
+
+
+from matplotlib.colors import ListedColormap
+cmap = sns.cubehelix_palette(start=0, rot=.2, light=0.9, hue = 0.9, n_colors=max(n_clusters_list)+1)
+
+plt.close()    
+fig,ax = plt.subplots(1,1, figsize = (10,10))
+# left plot
+#plt.sca(ax[0])
+cax = sns.heatmap(df_labels, annot = False, yticklabels = df_labels.index, cmap = ListedColormap(cmap))
+
+xticks = cax.get_xticks()
+xticks = np.array(xticks,dtype =int )
+xticks_eps = np.array(eps_list[xticks], dtype = int)
+plt.axvline(x = eps_index_low, linestyle = '--')
+plt.axvline(x = eps_index_up, linestyle = '--')
+plt.xticks(xticks, xticks_eps)
+plt.xlabel('Eps value')
+plt.tight_layout()
+
+
+"""
+# right plot
+plt.sca(ax[1])
+df_labels.sort_values(eps_index_up, inplace = True)
+
+cax = sns.heatmap(df_labels, annot = False, yticklabels = df_labels.index, 
+            cmap = ListedColormap(cmap)
+            )
+
+xticks = cax.get_xticks()
+xticks = np.array(xticks,dtype =int )
+xticks_eps = np.array(eps_list[xticks], dtype = int)
+plt.xticks(xticks, xticks_eps)
+plt.axvline(x = eps_index_up, linestyle = '--')
+plt.xlabel('Eps value')
+"""
+
+###########################################################
+
+
+@ 
+
+In Fig. \ref{fig:DBSCAN_labels} the colors represent the cluster labels for each year at each Eps value. The years Y-axis is ordered by considering the cluster labels at two different densities, identyfied by the vertical dotted lines. 
+At Eps = 46 the years are grouped in five clusters, with more than 50\% of noise. At a lower density, corresponding to an higher Eps = 56 the time histories merged in three clusters, with about 20\% noise, as shown also in \ref{fig:dbscan_clustering}. 
+
+The clusters 
+
+
+<<echo =False, results = 'hidden'>>=
+
+df_labels[eps_index_low].sort_values()
+
+groups_info = {name: group.apply(np.mean) for name, group in groups}
+groups_info = {name: group.apply(lambda x: x[-1]/x[0]) for name, group in groups}
+groups_info = {name: ( group['Adj'][-1]/group['Adj'][0] )
+               for name, group in groups}
+{key: min(groups_info.values()) for key in groups_info.keys()}
+max(groups_info.values())
+min(groups_info.values())
+@ 
+
+\begin{itemize}
+<<cluster_labels, echo = False, results = 'tex'>>=
+
+labels_low = df_labels[eps_index_low]
+labels_low_groups = labels_low.groupby(labels_low.values)
+
+
+print("\\item Clusters for Eps = {:.0f}: \\\\ ".format(eps_list[eps_index_low]))
+
+for name, group  in labels_low_groups:
+    if(name!=-1):
+        print("Cluster {:.0f}:".format(name+1))
+        print("\{ ", end = "")
+        for y in group.index[:-1]:
+            print(y, end = ", ")
+        print(group.index[-1], end="\} \n \\\\ " )
+
+
+labels_up = df_labels[eps_index_up]
+labels_up_groups = labels_up.groupby(labels_up.values)
+
+print("\\item Clusters for Eps = {:.0f}: \\\\ ".format(eps_list[eps_index_up]))
+
+for name, group  in labels_up_groups:
+    if(name!=-1):
+        print("Cluster {:.0f}:".format(name+1))
+        print("\{ ", end = "")
+        for y in group.index[:-1]:
+            print(y, end = ", ")
+        print(group.index[-1], end="\} \n \\\\ " )
+        
+        
+
+@ 
+\end{itemize}
+
+<<echo = False, caption = 'Time histories for different clusters'>>=
+
+plt.close()
+
+fig, ax = plt.subplots(2,2, figsize = (FIGSIZE_TWOCOL[0], FIGSIZE_TWOCOL[1]*2))
+for name, group in labels_low_groups:
+    if(name>0):
+        plt.subplot(220+name)
+        for y in group.index:
+            plt.plot(range(len(groups_norm[int(y)].Adj)), 
+                         groups_norm[int(y)].Adj, label = str(y))
+            plt.legend()
+            plt.xlabel('Days')
+            plt.ylabel('Standardized Adj')
+            plt.title('Cluster '+ str(int(name)+1))
+
+plt.tight_layout()
+            
+@ 
+
+
+Possible questions to answer:
+\begin{itemize}
+\item Overall description of the time series: which are the best/worse years?  
+\item There is a periodicity in the best/worse years?
+\item There is a periodicity during each year?
+\item To which event are correlated the best/worse years? Find history 
+  of the company in particular moments
+  
+\item What is it the average year trend over all the IBM stock history? 
+\item Which year groups are most similar? Why are they similar?
+\item There is a periodicity in the similarities?  
+  
+  
+  
+\end{itemize}
+
+\section{Sequential patterns}
+
+Sequential patterns: discover patterns over the stock value time series above. 
+
+Before that, preprocess the data by splitting it into monthly time series and discretizing them in some way. 
+
+Objective: find Motifs-like patterns (i.e. frequent contiguous subsequences) of length at least 4 days.
+
+Dataset: same as the point before.
+
+IDEA:
+\begin{itemize}
+\item Ogni mese corrisponde ad una sequenza di circa 25 giorni
+\item normalizzare ciascuna sequenza (normalizzare su tutta la storia temporale o mensilmente?)
+\item discretizzare in ampiezza con alfabeto 'normale' ovvero gaussiano, vedere SAX
+\item eseguire GSP con gap nullo per la contiguita e cercando sequenze di almeno quattro giorni.
+\end{itemize}
+
+
+<<echo =False>>=
+
+import saxpy as saxpy
+import saxpy.alphabet as alpha
+import saxpy.sax as sax
+
+
+# grouping and standardization
+
+groups_month = df.groupby([df.index.year,df.index.month])
+
+groups_month_dict = {name:group for name, group in groups_month}
+
+groups_std = { name:pd.DataFrame(preprocessing.scale(group), index = group.index, columns = group.columns) for name,group in groups_month}
+
+
+cuts = alpha.cuts_for_asize(6)
+cuts
+
+adj = np.array(groups_std[(1986,6)].Adj)
+
+adj.round(2)
+
+letters = [chr(n) for n in range(ord('a'),ord('z')+1)]
+
+ord(string[0])-ord('a')
+
+
+list_sequences = list()
+for group in groups_std.values():
+    adj = np.array((group['Adj']))
+    list_sequences.append( sax.ts_to_string(adj, cuts))
+
+list_sequences[0]
+    
+with  open('data/sequences.txt', 'w') as f:
+    for seq in list_sequences:
+        for l in seq:
+            f.write( str((ord(l)-ord('a')+1)) + " -1 ")  
+        f.write('-2 \n')
+
+
+
+
+import os
+import subprocess
+
+
+subprocess.call('ls')
+
+minSup = 0.2
+minLength = 4
+minGap = 1
+
+os.system('ls')
+
+os.system(
+'java -jar spmf.jar run CM-SPAM data/sequences.txt data/patterns.txt {} {} "" "" {} false'.format(minSup, minLength, minGap)
+)
+
+
+
+out = pd.read_csv('data/patterns.txt')        
+
+out
+
+@ 
+
+
+\end{document}
