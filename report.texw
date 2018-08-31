@@ -77,7 +77,7 @@ plt.rc('axes', titlesize=BIGGER_SIZE)     # fontsize of the axes title
 plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
 import seaborn as sns
 
-df = pd.read_csv('ibm_daily_1962-2018.csv', sep='\t',header=0, 
+df = pd.read_csv('data/ibm_daily_1962-2018.csv', sep='\t',header=0, 
                  index_col = 0)
 df.index = pd.to_datetime(df.index)
 
@@ -548,6 +548,9 @@ import saxpy.sax as sax
 
 # grouping and standardization
 
+
+df_std = pd.DataFrame(preprocessing.scale(df), index = df.index, columns = df.columns)
+
 groups_month = df.groupby([df.index.year,df.index.month])
 
 groups_month_dict = {name:group for name, group in groups_month}
@@ -558,21 +561,13 @@ groups_std = { name:pd.DataFrame(preprocessing.scale(group), index = group.index
 cuts = alpha.cuts_for_asize(6)
 cuts
 
-adj = np.array(groups_std[(1986,6)].Adj)
-
-adj.round(2)
-
-letters = [chr(n) for n in range(ord('a'),ord('z')+1)]
-
-ord(string[0])-ord('a')
-
 
 list_sequences = list()
 for group in groups_std.values():
     adj = np.array((group['Adj']))
     list_sequences.append( sax.ts_to_string(adj, cuts))
 
-list_sequences[0]
+list_sequences
     
 with  open('data/sequences.txt', 'w') as f:
     for seq in list_sequences:
@@ -588,22 +583,77 @@ import subprocess
 
 
 subprocess.call('ls')
+os.system('ls')
 
-minSup = 0.2
+minSup = 0.05
 minLength = 4
 minGap = 1
-
-os.system('ls')
 
 os.system(
 'java -jar spmf.jar run CM-SPAM data/sequences.txt data/patterns.txt {} {} "" "" {} false'.format(minSup, minLength, minGap)
 )
 
 
+import re
 
-out = pd.read_csv('data/patterns.txt')        
 
-out
+# reading and converting the sequences
+
+list_seq = list()
+with open('data/patterns.txt', 'r') as f:
+    while True:
+        line = f.readline()
+        if (line == ""):
+            break
+        m = re.search(r'#SUP:', line)
+        seq = line[0:m.start()]    
+        seq = seq.split(' -1 ')
+        seq = [int(i) for i in seq[:-1]]
+        sup = int(line[m.end():].strip())
+        list_seq.append({'seq':seq, 'sup' : sup})
+
+
+    
+list_seq
+
+
+def calc_diff_cum(seq):
+    """ compute the cumulative difference """
+    cum = 0
+    for i,el in enumerate(seq[1:]):
+        cum += abs( seq[i]-seq[i-1])
+    return cum
+
+N = len(list_sequences)
+lengths = list()
+diff = list()
+diff_cum = list()
+sup = list()
+sup_perc = list()
+end = list()
+for el in list_seq:
+    lengths.append(len(el['seq']))
+    diff.append(el['seq'][-1]-el['seq'][0])
+    diff_cum.append(calc_diff_cum(el['seq']))
+    sup.append(el['sup'])
+    sup_perc.append( round(el['sup']/N,3))
+    end.append(el['seq'][-1])
+
+    
+
+df_seq = pd.DataFrame({'len':lengths, 'diff':diff, 'diff_cum':diff_cum,
+                       'end':end, 'sup': sup, 'sup_perc': sup_perc})
+    
+    
+df_seq.sort_values('sup', ascending = False, inplace = True)
+
+
+plt.close()
+plt.scatter(df_seq['sup'], df_seq['diff'], s = df_seq['diff_cum']*100)
+
+plt.scatter(df_seq['diff_cum'], df_seq['sup'], s = df_seq['diff']*100)
+
+
 
 @ 
 
